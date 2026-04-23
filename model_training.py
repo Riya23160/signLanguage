@@ -1,12 +1,9 @@
-# ==========================
-# PHASE 1 — TRAINING SCRIPT
-# ==========================
+
 import os
 import cv2
 import mediapipe as mp
 import numpy as np
 from tqdm import tqdm
-import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
@@ -15,19 +12,27 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.optimizers.schedules import CosineDecay
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import matplotlib.pyplot as plt
+import logging
+import sys
 
-# --------------------------------------
-# PATHS & CONFIG
-# --------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("training.log")
+    ]
+)
+
+logger = logging.getLogger()
+
 INPUT_DIR = "dataset/images"
 PROCESSED_DIR = "data_processed"
 IMG_SIZE = 128
 BATCH_SIZE = 32
 EPOCHS = 40
 
-# --------------------------------------
-# MEDIAPIPE HAND CROP (Supports 2 Hands)
-# --------------------------------------
+
 mp_hands = mp.solutions.hands
 
 def extract_hands(img_path, img_size=128):
@@ -76,9 +81,6 @@ def extract_hands(img_path, img_size=128):
         # Single hand
         return crops[0]
 
-# --------------------------------------
-# CREATE PROCESSED DATASET
-# --------------------------------------
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 for label in tqdm(os.listdir(INPUT_DIR), desc="Preprocessing Dataset"):
@@ -94,17 +96,17 @@ for label in tqdm(os.listdir(INPUT_DIR), desc="Preprocessing Dataset"):
         processed = extract_hands(img_path, IMG_SIZE)
         if processed is not None:
             cv2.imwrite(os.path.join(dst_dir, img_file), processed)
+        else:
+            logger.warning(f"Skipped image (no hand detected): {img_path}")
 
-# --------------------------------------
-# TRAINING
-# --------------------------------------
+
 train_datagen = ImageDataGenerator(
     rescale=1./255,
     rotation_range=15,
     width_shift_range=0.1,
     height_shift_range=0.1,
-    zoom_range=0.1,
-    horizontal_flip=True,
+    zoom_range=0.15,
+    brightness_range=[0.8, 1.2],
     validation_split=0.2
 )
 
@@ -121,26 +123,24 @@ val_data = train_datagen.flow_from_directory(
     batch_size=BATCH_SIZE,
     subset='validation'
 )
+np.save("label_map.npy", train_data.class_indices)
 
-# --------------------------------------
-# MODEL
-# --------------------------------------
 base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 base_model.trainable = False
 
 x = base_model.output
 x = GlobalAveragePooling2D()(x)
-x = Dense(512, activation='relu')(x)
+x = Dense(1024, activation='relu')(x)
 x = Dropout(0.5)(x)
-x = Dense(256, activation='relu')(x)
+x = Dense(512, activation='relu')(x)
 x = Dropout(0.4)(x)
+x = Dense(256, activation='relu')(x)
 out = Dense(train_data.num_classes, activation='softmax')(x)
 
 model = Model(inputs=base_model.input, outputs=out)
 
 steps_per_epoch = len(train_data)
 
-# ❗ FIXED LINE (no syntax error)
 lr_sched = CosineDecay(
     initial_learning_rate=0.0003,
     decay_steps=EPOCHS * steps_per_epoch
@@ -163,7 +163,25 @@ model.fit(
     epochs=EPOCHS,
     callbacks=callbacks
 )
+for layer in base_model.layers[-50:]:
+    layer.trainable = True
 
-model.save("final_sign_model.keras")
+model.compile(
+    optimizer=Adam(learning_rate=1e-5),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+finetune_callbacks = [
+    EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True, verbose=1),
+    ModelCheckpoint("best_sign_model_finetuned.keras", save_best_only=True, verbose=1)
+]
+model.fit(
+    train_data,
+    validation_data=val_data,
+    epochs=25,
+    callbacks=finetune_callbacks
+)
+
+model.save("model_trained\\final_sign_model.keras")
 
 print("\n✅ Training complete. Model saved as final_sign_model.keras.")
