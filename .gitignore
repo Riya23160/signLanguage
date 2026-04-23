@@ -7,3 +7,4 @@ __pycache__/
 dataset/
 data_processed/
 echo .vscode/ >> .gitignore
+echo capture_dataset.py >> .gitignorecapture_dataset.py
