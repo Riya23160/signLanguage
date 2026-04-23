@@ -6,5 +6,5 @@ __pycache__/
 .DS_Store
 dataset/
 data_processed/
-echo .vscode/ >> .gitignore
-echo capture_dataset.py >> .gitignorecapture_dataset.py
+.vscode/ 
+capture_dataset.py 
